@@ -1,0 +1,406 @@
+params:
+    # if distDir is not defined lets define it
+  - name: distDir
+    value: '{{- or .distDir ".dist"}}'
+    print: true
+    # if artifacts is not defined lets define it
+  - name: artifactsDir
+    value: '{{- or .artifactsDir ".artifacts"}}'
+    print: true
+    
+  # release builds the release
+  # 
+  # define .release for a release build (using tags)
+
+  # - name: includePackages
+  #   value: yes
+  # - name: includeDocker
+  #   value: yes
+  # - name: includeDockerHub
+  #   value: yes
+  # - name: dockerUse
+  #   value: buildx // !!note not used in circle !!
+  # - name: includeGHCR
+  #   value: yes
+  # - name: includeBrews
+  #   value: yes
+  # - name: homebrewTap
+  #   value: 'homebrew-tap'
+
+  # - name: projectName
+  #   value: <<PROJECT_NAME>>
+  # - name: description
+  #   value: '<<DESCRIPTION>>'
+  # - name: builtBy
+  #   value: '<<BUILDER>>'
+  # - name: repoUser
+  #   value: '<<USER>>'
+  # - name: license
+  #   value: 'Apache 2.0'
+  
+sequences:
+  - release:
+    - initialise
+    - validate
+    - credits
+    - goreleaser
+    - tag_display
+    - cleanup
+
+  - coverage:
+    - initialise
+    - validate
+    - coverage
+    - cleanup
+
+  - cirelease:
+    - initialise
+    - validate
+    - credits
+    - fossa
+    - coverage
+    - goreleaser
+    - tag_display
+    - cleanup
+
+  - cicommit:
+    - initialise
+    - validate
+    - tag_display
+    - cleanup
+
+  - precommit:
+    - initialise
+    - validate
+    - credits
+    - tag_display
+    - cleanup
+
+stages:
+  # initialise creates the artifacts folder
+  # requires .artifactsDir to be defined
+  - name: initialise
+    tasks:
+      - name: clear any existing artifacts dir
+        type: cleaner
+        files:
+          - '{{ .distDir }}'
+          - '{{ .artifactsDir }}'
+      - type: mkdir
+        name: create the artifacts dir
+        log: true
+        dirs:
+          - '{{ .artifactsDir }}'
+
+  # validate checks a build passes tests and lint checks
+  - name: validate
+    tasks:
+      - name: go_mod_tidy 
+        type: run
+        command: 'go mod tidy'
+      - name: go_test 
+        type: run
+        command: 'go test -covermode=count ./...'
+        logStdOut: true
+      - name: golangci-lint
+        type: run
+        command: 'golangci-lint run'
+      - name: go_list_modules 
+        type: run
+        command: 'go list -json -m all'
+        output: 
+          variable: nancy 
+      - name: nancy
+        type: run
+        command: 'nancy sleuth --quiet'
+        input: 
+          variable: nancy 
+        logStdOut: true
+
+
+  # credits updates the credits document using the mod list
+  - name: credits
+    tasks:
+      - name: credits
+        type: run
+        command: 'gocredits'
+        output: 
+          path: 'CREDITS'
+
+  # Add test coverage of the build
+  # requires COVERALLS_REPO_TOKEN to be defined
+  # .artifactsDir -- where artifacts are stored
+  - name: coverage
+    tasks:
+      - name: clear_test_cache
+        type: run
+        command: 'go clean -testcache'
+      - name: run_coverage
+        type: run
+        command: 'go test -v -covermode=count -coverprofile={{ .artifactsDir }}/coverage.out ./...'
+      - name: publish
+        type: run
+        command: 'goveralls -coverprofile={{ .artifactsDir }}/coverage.out -repotoken $COVERALLS_REPO_TOKEN'
+  
+  - name: fossa
+    tasks:
+      - name: analyze
+        type: run
+        command: 'fossa analyze'
+
+  # release builds the release
+  # 
+  # define .release for a release build (using tags)
+  #
+  # required params:
+  # .artifactsDir -- where artifacts are stored
+  # .repoUser -- repo org/user 
+  #
+  # optional: 
+  # .projectName
+  # .distDir  -- defaults to '.dist'
+  #
+  # homebrew release needs
+  # .includeBrews
+  # .description project description
+  # .homebrewTap if want to overrides default of homebrew-tap
+  #
+  # distro packages 
+  # .includePackages
+  # .description project description
+  # .license (apache 2.0 etc)
+  # .releaseHeader body of header markdown or missing if none
+  # .releaseFooter body of footer markdown or missing if none
+  #
+  # docker
+  # docker can push to dockerhub and/or ghcr it can optionally use manifests
+  # .includeDocker must be defined to release any docker
+  # .dockerfile is the path to the docker file to use for releases, must be defined
+  # .includeGHCR should be define dto use ghcr ... also must have logged into docker ghcr, external to scripts
+  # .includeDockerHub should be defined if dockerhub is to be pushed releases ... must login external to script
+  # .dockerUseManifests should be defined if want to use manifests ... experimental docker cli feature
+  # .dockerUse buildx local or docker for ci 
+
+  - name: goreleaser
+    params:
+      - name: goreleaserCfg
+        value: '{{ .artifactsDir }}/goreleaser.tmp'
+      - name: args
+        value: '--rm-dist{{if not .release}} --snapshot --skip-publish{{end}}{{if .debug}} --debug{{end}}'
+        print: true
+      - name: dockerUse
+        value: '{{if .dockerUse}}{{.dockerUse}}{{else}}{{if .Env.CI }}docker{{else}}buildx{{end}}{{end}}'
+        print: true
+      - name: dockerfile
+        value: '{{if .includeDocker}}{{or .dockerfile "Dockerfile"}}{{end}}'
+        print: true
+    tasks:
+      - name: prepare_goreleaser
+        type: template
+        delims:
+          left: '[['
+          right: ']]'
+        output: 
+          path: '{{ .goreleaserCfg }}'
+        template:
+          inline : |
+            [[if .projectName]]
+            project_name: [[.projectName]]
+            [[end]]
+
+            [[if .distDir]]
+            dist: [[.distDir]]
+            [[else]]
+            dist: .dist
+            [[end]]
+
+            before:
+              hooks:
+                - go mod tidy
+
+            builds:
+              - skip: [[ or .build_skip "false" ]]
+                env:
+                - CGO_ENABLED=0
+                goos:
+                  - linux
+                  - darwin
+                  - windows
+                goarch:
+                  - amd64
+                  - arm64
+                mod_timestamp: '{{ .CommitTimestamp }}'
+                flags:
+                  - -trimpath
+                ldflags:
+                  - '-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }} -X main.builtBy=[[.builtBy]]'
+                hooks:
+                  post: upx {{ .Path }}
+
+            [[if .includeBrews]]
+            brews:
+              - tap:
+                  owner: '[[.repoUser]]'
+                  [[if .homebrewTap]]
+                  name: [[.homebrewTap]]
+                  [[else]]
+                  name: homebrew-tap
+                  [[end]]
+                folder: Formula
+                homepage: 'https://github.com/[[.repoUser]]/{{ .ProjectName }}'
+                description: '[[.description]]'
+            [[end]]
+
+            [[if .includePackages]]
+            nfpms:
+              - homepage: 'https://github.com/[[.repoUser]]/{{ .ProjectName }}'
+                description: '[[.description]]'
+                license: '[[.license]]' 
+                formats:
+                - apk
+                - deb
+                - rpm
+            [[end]]
+
+            release:
+              github:
+                owner: '[[.repoUser]]'
+                name: '[[.projectName]]'
+
+              [[if .releaseHeader]]
+              header: |
+                [[.releaseHeader | indent 6]]
+              [[end]]
+
+              [[if .releaseFooter]] 
+              footer: |
+                [[.releaseFooter | indent 6]]
+              [[end]]
+                
+            archives:
+              - replacements:
+                  darwin: Darwin
+                  linux: Linux
+                  windows: Windows
+                  386: i386
+                  amd64: x86_64
+                format_overrides:
+                  - goos: windows
+                    format: zip
+                files:
+                    - LICENSE
+                    - README.md
+                    - CREDITS
+
+            checksum:
+              name_template: 'checksums.txt'
+            snapshot:
+              name_template: "{{ .Tag }}"
+            changelog:
+              skip: false
+              sort: asc
+              filters:
+                exclude:
+                  - '^docs:'
+                  - '^test:'
+
+            [[if and .dockerfile .includeDocker]]
+            dockers:
+              - image_templates:
+            [[if .includeGHCR]]
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-amd64'
+            [[if not .dockerUseManifests]]
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}'
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:latest'
+            [[end]]
+            [[end]]
+            [[if .includeDockerHub]] 
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-amd64'
+            [[if not .dockerUseManifests]]
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}'
+                - '[[.repoUser]]/{{ .ProjectName }}:latest'
+            [[end]]
+            [[end]]
+                dockerfile: [[.dockerfile]]
+                [[if .dockerUse]]
+                use: [[.dockerUse]]
+                [[end]] 
+                build_flag_templates:
+                  - "--pull"
+                  - "--label=org.opencontainers.image.created={{.Date}}"
+                  - "--label=org.opencontainers.image.name={{.ProjectName}}"
+                  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+                  - "--label=org.opencontainers.image.version={{.Version}}"
+                  - "--label=org.opencontainers.image.source=https://github.com/[[.repoUser]]/{{ .ProjectName }}"
+                  - "--platform=linux/amd64"
+                goarch: amd64
+              - image_templates:
+            [[if .includeGHCR]]
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-arm64'
+            [[end]]
+            [[if .includeDockerHub]] 
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-arm64'
+            [[end]]
+                dockerfile: [[.dockerfile]]
+                [[if .dockerUse]]
+                use: [[.dockerUse]]
+                [[end]] 
+                build_flag_templates:
+                  - "--pull"
+                  - "--label=org.opencontainers.image.created={{.Date}}"
+                  - "--label=org.opencontainers.image.name={{.ProjectName}}"
+                  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+                  - "--label=org.opencontainers.image.version={{.Version}}"
+                  - "--label=org.opencontainers.image.source=https://github.com/[[.repoUser]]/{{ .ProjectName }}"
+                  - "--platform=linux/arm64"
+                goarch: arm64
+
+            [[if .dockerUseManifests]]
+            docker_manifests:
+            [[if .includeGHCR]]
+              - name_template: 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}'
+                image_templates:
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-amd64'
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-arm64'
+              - name_template: 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:latest'
+                image_templates:
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-amd64'
+                - 'ghcr.io/[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-arm64'
+            [[end]]
+            [[if .includeDockerHub]]    
+              - name_template: '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}'
+                image_templates:
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-amd64'
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-arm64'
+              - name_template: '[[.repoUser]]/{{ .ProjectName }}:latest'
+                image_templates:
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-amd64'
+                - '[[.repoUser]]/{{ .ProjectName }}:{{ .Tag }}-arm64'
+            [[end]]
+            [[end]]
+            [[end]]
+
+      - name: run_goreleaser
+        type: run
+        command: 'goreleaser {{ .args }} --config {{ .goreleaserCfg }}'
+        env:
+          REPO_USER: '{{ .repoUser }}'
+
+  # tag lists the current build tag
+  - name: tag_display
+    tasks:
+      - name: next_tag
+        try: true
+        type: run
+        command: 'svu'
+        logStdOut: true
+
+  # cleanup cleans up artifacts
+  - name: cleanup
+    tasks:
+      - name: cleanup_artifacts
+        type: cleaner
+        files:
+          - '{{ .artifactsDir }}'
+
+#end of file
