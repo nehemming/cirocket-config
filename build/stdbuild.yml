@@ -233,7 +233,7 @@ stages:
                 flags:
                   - -trimpath
                 ldflags:
-                  - '-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }} -X main.builtBy=[[.builtBy]]'
+                  - '-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }} -X main.builtBy=[[.builtBy]] -X main.compName={{ .ProjectName }}'
                 hooks:
                   post: upx {{ .Path }}
 
@@ -331,7 +331,7 @@ stages:
                   - "--label=org.opencontainers.image.name={{.ProjectName}}"
                   - "--label=org.opencontainers.image.revision={{.FullCommit}}"
                   - "--label=org.opencontainers.image.version={{.Version}}"
-                  - "--label=org.opencontainers.image.source=https://github.com/[[.repoUser]]/{{ .ProjectName }}"
+                  - "--label=org.opencontainers.image.source=https://github.com/[[.repoUser]]/{{.ProjectName }}"
                   - "--platform=linux/amd64"
                 goarch: amd64
               - image_templates:
