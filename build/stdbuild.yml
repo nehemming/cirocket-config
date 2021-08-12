@@ -390,7 +390,6 @@ stages:
   - name: tag_display
     tasks:
       - name: next_tag
-        try: true
         type: run
         command: 'svu'
         logStdOut: true
