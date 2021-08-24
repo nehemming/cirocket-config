@@ -76,18 +76,23 @@ sequences:
     - tag_display
     - cleanup
 
+onfail:
+  ref: cleanup
+
 stages:
   # initialise creates the artifacts folder
   # requires .artifactsDir to be defined
   - name: initialise
     tasks:
-      - name: clear any existing artifacts dir
+      - name: init_clean
+        description: clear any existing artifacts dir
         type: cleaner
         files:
           - '{{ .distDir }}'
           - '{{ .artifactsDir }}'
       - type: mkdir
-        name: create the artifacts dir
+        name: init_create_artifacts
+        description: create the artifacts dir
         log: true
         dirs:
           - '{{ .artifactsDir }}'
@@ -102,7 +107,7 @@ stages:
         type: run
         command: 'go test -covermode=count ./...'
         logStdOut: true
-      - name: golangci-lint
+      - name: golangci_lint
         type: run
         command: 'golangci-lint run'
       - name: go_list_modules 
@@ -389,10 +394,11 @@ stages:
   # tag lists the current build tag
   - name: tag_display
     tasks:
-      - name: next_tag
-        type: run
-        command: 'svu'
-        logStdOut: true
+      - try:
+        - name: next_tag
+          type: run
+          command: 'svu'
+          logStdOut: true
 
   # cleanup cleans up artifacts
   - name: cleanup
